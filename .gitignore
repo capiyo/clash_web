@@ -1,0 +1,17 @@
+﻿# Rust - NEVER commit these!
+target/
+Cargo.lock
+
+# Debug files
+*.pdb
+*.rlib
+*.exe
+*.dll
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
