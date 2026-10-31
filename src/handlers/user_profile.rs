@@ -157,6 +157,7 @@ pub async fn save_user_profile(
         number_of_bets: payload.number_of_bets,
         avatar_url: existing_user.as_ref().and_then(|u| u.avatar_url.clone()),
         avatar_public_id: existing_user.as_ref().and_then(|u| u.avatar_public_id.clone()),
+        avatar_storage_path: existing_user.as_ref().and_then(|u| u.avatar_storage_path.clone()),
         created_at: existing_user.as_ref()
             .map(|u| u.created_at)
             .unwrap_or(bson_now),
@@ -361,6 +362,7 @@ pub async fn create_user_profile(
         number_of_bets: payload.number_of_bets,
         avatar_url: None,
         avatar_public_id: None,
+        avatar_storage_path: None,
         created_at: BsonDateTime::from_chrono(now),
         updated_at: BsonDateTime::from_chrono(now),
     };
@@ -431,22 +433,36 @@ pub async fn upload_profile_avatar(
     let filter = doc! { "user_id": &user_id };
     let previous = collection.find_one(filter.clone()).await?;
     let previous_public_id = previous.as_ref().and_then(|profile| profile.avatar_public_id.clone());
+    let previous_storage_path = previous.as_ref().and_then(|profile| profile.avatar_storage_path.clone());
 
-    let upload_key = format!("avatar_{}", uuid::Uuid::new_v4().simple());
-    let (_original_url, public_id) = state.cloudinary
-        .upload_image_with_preset(&image_bytes, "profile-avatars", Some(&upload_key))
-        .await?;
-
-    let avatar_url = state.cloudinary.generate_transformed_url(
-        &public_id,
-        "c_fill,w_256,h_256,g_face,q_auto,f_auto",
+    let storage = state.firebase_storage.as_ref().ok_or_else(|| {
+        AppError::InternalServerError(
+            "Firebase Storage is not configured. Set FIREBASE_STORAGE_BUCKET, FIREBASE_STORAGE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY.".to_string()
+        )
+    })?;
+    let extension = match image_kind.mime_type() {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/webp" => "webp",
+        _ => return Err(AppError::InvalidImageFormat),
+    };
+    let storage_path = format!(
+        "profile-avatars/{}/{}.{}",
+        user_id,
+        uuid::Uuid::new_v4(),
+        extension
     );
+    let (avatar_url, storage_path) = storage
+        .upload(&storage_path, &image_bytes, image_kind.mime_type())
+        .await
+        .map_err(|error| AppError::InternalServerError(format!("Firebase Storage avatar upload failed: {error}")))?;
 
     let now = BsonDateTime::from_chrono(Utc::now());
     let update = doc! {
         "$set": {
             "avatar_url": &avatar_url,
-            "avatar_public_id": &public_id,
+            "avatar_public_id": Bson::Null,
+            "avatar_storage_path": &storage_path,
             "updated_at": now,
         },
         "$setOnInsert": {
@@ -463,17 +479,23 @@ pub async fn upload_profile_avatar(
     };
 
     if let Err(error) = collection.update_one(filter.clone(), update).upsert(true).await {
-        if let Err(cleanup_error) = state.cloudinary.delete_image(&public_id).await {
-            tracing::warn!("Could not clean up failed avatar upload {}: {}", public_id, cleanup_error);
+        if let Err(cleanup_error) = storage.delete(&storage_path).await {
+            tracing::warn!("Could not clean up failed Firebase avatar upload {}: {}", storage_path, cleanup_error);
         }
         return Err(error.into());
     }
 
-    if let Some(old_public_id) = previous_public_id {
-        if old_public_id != public_id {
-            if let Err(error) = state.cloudinary.delete_image(&old_public_id).await {
-                tracing::warn!("Could not remove replaced profile avatar {}: {}", old_public_id, error);
+    if let Some(old_path) = previous_storage_path {
+        if old_path != storage_path {
+            if let Err(error) = storage.delete(&old_path).await {
+                tracing::warn!("Could not remove replaced Firebase avatar {}: {}", old_path, error);
             }
+        }
+    }
+    // Remove a previous Cloudinary avatar only after the Firebase URL is saved.
+    if let Some(old_public_id) = previous_public_id {
+        if let Err(error) = state.cloudinary.delete_image(&old_public_id).await {
+            tracing::warn!("Could not remove replaced legacy Cloudinary avatar {}: {}", old_public_id, error);
         }
     }
 
