@@ -2,6 +2,7 @@ use mongodb::Database;
 use std::sync::Arc;
 
 use crate::services::cloudinary::CloudinaryService;
+use crate::services::firebase_storage::FirebaseStorageService;
 use crate::services::mpesa_service::MpesaService;
 use crate::services::fcm_service::FCMService;
 use crate::services::otp_service::OTPService;
@@ -14,6 +15,7 @@ pub struct AppState {
     pub mpesa_service: Option<Arc<MpesaService>>,
     pub fcm_service: Option<Arc<FCMService>>,
     pub cloudinary: CloudinaryService,
+    pub firebase_storage: Option<FirebaseStorageService>,
     pub otp_service: OTPService,
     pub sms_service: SMSService,
 }
@@ -32,6 +34,7 @@ impl AppState {
         sms_config: SmsConfig,
     ) -> Result<Self, AppError> {
         let cloudinary = CloudinaryService::new()?;
+        let firebase_storage = FirebaseStorageService::from_env();
 
         let otp_service = OTPService::new(db.clone(), jwt_secret);
         let sms_service = SMSService::new(
@@ -45,6 +48,7 @@ impl AppState {
             mpesa_service: None,
             fcm_service: None,
             cloudinary,
+            firebase_storage,
             otp_service,
             sms_service,
         })
