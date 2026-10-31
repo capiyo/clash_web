@@ -12,7 +12,7 @@ use validator::Validate;
 
 use crate::state::AppState;
 use crate::models::user_profile::{UserProfile, CreateUserProfile, UpdateBalanceRequest, UserQuery};
-use crate::models::user::Claims;
+use crate::models::user::{Claims, User};
 use crate::errors::{AppError, Result};
 
 #[derive(Debug, Deserialize)]
@@ -381,8 +381,22 @@ pub async fn upload_profile_avatar(
     Extension(claims): Extension<Claims>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>> {
-    if user_id.is_empty() || claims.sub != user_id {
+    if user_id.is_empty() {
         return Err(AppError::Unauthorized);
+    }
+    if claims.sub != user_id {
+        // Firebase ID tokens identify the Firebase UID, while this API's
+        // legacy profile key is the Mongo user ObjectId. Bind the two through
+        // the verified phone claim rather than trusting a client-supplied ID.
+        if claims.phone.is_empty() {
+            return Err(AppError::Unauthorized);
+        }
+        let object_id = ObjectId::parse_str(&user_id).map_err(|_| AppError::Unauthorized)?;
+        let users: Collection<User> = state.db.collection("users");
+        let owner = users.find_one(doc! { "_id": object_id, "phone": &claims.phone }).await?;
+        if owner.is_none() {
+            return Err(AppError::Unauthorized);
+        }
     }
 
     const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
