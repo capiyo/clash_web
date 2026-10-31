@@ -19,7 +19,7 @@ pub struct UserProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
 
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub avatar_public_id: Option<String>,
 
     pub created_at: BsonDateTime,

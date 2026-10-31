@@ -392,14 +392,18 @@ pub async fn upload_profile_avatar(
         if field.name() != Some("image") {
             continue;
         }
-        let bytes = field.bytes().await?;
+        let mut bytes = Vec::new();
+        let mut field = field;
+        while let Some(chunk) = field.chunk().await? {
+            if bytes.len() + chunk.len() > MAX_IMAGE_BYTES {
+                return Err(AppError::ImageTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         if bytes.is_empty() {
             return Err(AppError::NoImageProvided);
         }
-        if bytes.len() > MAX_IMAGE_BYTES {
-            return Err(AppError::ImageTooLarge);
-        }
-        image_bytes = Some(bytes.to_vec());
+        image_bytes = Some(bytes);
         break;
     }
 
@@ -415,7 +419,7 @@ pub async fn upload_profile_avatar(
     let previous_public_id = previous.as_ref().and_then(|profile| profile.avatar_public_id.clone());
 
     let upload_key = format!("avatar_{}", uuid::Uuid::new_v4().simple());
-    let (original_url, public_id) = state.cloudinary
+    let (_original_url, public_id) = state.cloudinary
         .upload_image_with_preset(&image_bytes, "profile-avatars", Some(&upload_key))
         .await?;
 
@@ -425,7 +429,7 @@ pub async fn upload_profile_avatar(
     );
 
     let now = BsonDateTime::from_chrono(Utc::now());
-    let mut update = doc! {
+    let update = doc! {
         "$set": {
             "avatar_url": &avatar_url,
             "avatar_public_id": &public_id,
@@ -444,9 +448,6 @@ pub async fn upload_profile_avatar(
         }
     };
 
-    // Avoid retaining an unused local URL; Cloudinary's transformed URL is the
-    // canonical one exposed to clients.
-    let _ = original_url;
     if let Err(error) = collection.update_one(filter.clone(), update).upsert(true).await {
         if let Err(cleanup_error) = state.cloudinary.delete_image(&public_id).await {
             tracing::warn!("Could not clean up failed avatar upload {}: {}", public_id, cleanup_error);
