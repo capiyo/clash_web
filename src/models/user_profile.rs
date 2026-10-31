@@ -22,6 +22,9 @@ pub struct UserProfile {
     #[serde(default)]
     pub avatar_public_id: Option<String>,
 
+    #[serde(default)]
+    pub avatar_storage_path: Option<String>,
+
     pub created_at: BsonDateTime,
     pub updated_at: BsonDateTime,
 }
