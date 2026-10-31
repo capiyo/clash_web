@@ -4,7 +4,7 @@ use axum::{
 };
 use axum_extra::extract::Multipart;
 use serde::Deserialize;
-use mongodb::bson::{doc, oid::ObjectId, DateTime as BsonDateTime};
+use mongodb::bson::{doc, oid::ObjectId, Bson, DateTime as BsonDateTime};
 use chrono::Utc;
 use mongodb::Collection;
 use futures_util::TryStreamExt;
