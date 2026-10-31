@@ -29,11 +29,9 @@ impl FirebaseStorageService {
     /// existing API instances bootable while deployment secrets are prepared.
     pub fn from_env() -> Option<Self> {
         let bucket = env::var("FIREBASE_STORAGE_BUCKET").ok()?;
-        let client_email = env::var("FIREBASE_CLIENT_EMAIL").ok()?;
-        let private_key = env::var("FIREBASE_PRIVATE_KEY").ok()?;
-        let project_id = env::var("FIREBASE_STORAGE_PROJECT_ID")
-            .or_else(|_| env::var("FIREBASE_PROJECT_ID"))
-            .ok()?;
+        let client_email = env::var("FIREBASE_STORAGE_CLIENT_EMAIL").ok()?;
+        let private_key = env::var("FIREBASE_STORAGE_PRIVATE_KEY").ok()?;
+        let project_id = env::var("FIREBASE_STORAGE_PROJECT_ID").ok()?;
 
         if bucket.trim().is_empty()
             || client_email.trim().is_empty()
