@@ -253,7 +253,16 @@ pub async fn create_post(
         )
     };
 
-    let _insert_result = collection.insert_one(&post).await?;
+    if let Err(error) = collection.insert_one(&post).await {
+        if let (Some(storage_path), Some(storage)) =
+            (post.firebase_storage_path.as_deref(), state.firebase_storage.as_ref())
+        {
+            if let Err(cleanup_error) = storage.delete(storage_path).await {
+                tracing::warn!("Could not clean up feed image after failed post insert {}: {}", storage_path, cleanup_error);
+            }
+        }
+        return Err(error.into());
+    }
     let post_response = PostResponse::from(post);
 
     Ok(Json(json!({
@@ -695,17 +704,21 @@ pub async fn delete_post(
         None => return Err(AppError::PostNotFound),
     };
 
-    if post.has_image() {
-        let cloudinary_service = &state.cloudinary;
-        if let Some(public_id) = post.cloudinary_public_id {
-            let _ = cloudinary_service.delete_image(&public_id).await;
-        }
-    }
-
     let delete_result = collection.delete_one(filter).await?;
 
     if delete_result.deleted_count == 0 {
         return Err(AppError::PostNotFound);
+    }
+
+    if let Some(public_id) = post.cloudinary_public_id.as_deref() {
+        let _ = state.cloudinary.delete_image(public_id).await;
+    }
+    if let (Some(storage_path), Some(storage)) =
+        (post.firebase_storage_path.as_deref(), state.firebase_storage.as_ref())
+    {
+        if let Err(error) = storage.delete(storage_path).await {
+            tracing::warn!("Could not delete Firebase feed image {}: {}", storage_path, error);
+        }
     }
 
     Ok(Json(json!({
@@ -737,25 +750,31 @@ pub async fn delete_posts_by_user(
         })));
     }
 
-    let cloudinary_service = &state.cloudinary;
-    let mut deleted_from_cloudinary = 0;
+    let delete_result = collection.delete_many(filter).await?;
 
+    let mut deleted_from_cloudinary = 0;
+    let mut deleted_from_firebase_storage = 0;
     for post in &posts {
-        if post.has_image() {
-            if let Some(public_id) = &post.cloudinary_public_id {
-                let _ = cloudinary_service.delete_image(public_id).await;
+        if let Some(public_id) = post.cloudinary_public_id.as_deref() {
+            if state.cloudinary.delete_image(public_id).await.is_ok() {
                 deleted_from_cloudinary += 1;
             }
         }
+        if let (Some(storage_path), Some(storage)) =
+            (post.firebase_storage_path.as_deref(), state.firebase_storage.as_ref())
+        {
+            if storage.delete(storage_path).await.is_ok() {
+                deleted_from_firebase_storage += 1;
+            }
+        }
     }
-
-    let delete_result = collection.delete_many(filter).await?;
 
     Ok(Json(json!({
         "success": true,
         "message": "All user posts deleted successfully",
         "deleted_from_db": delete_result.deleted_count,
         "deleted_from_cloudinary": deleted_from_cloudinary,
+        "deleted_from_firebase_storage": deleted_from_firebase_storage,
         "user_id": user_id
     })))
 }
@@ -786,12 +805,13 @@ pub async fn get_post_thumbnail(
         return Err(AppError::invalid_data("This post has no image"));
     }
 
-    let cloudinary_service = &state.cloudinary;
-    let thumbnail_url = cloudinary_service.generate_thumbnail_url(
-        &post.cloudinary_public_id.unwrap(),
-        width,
-        height,
-    );
+    let thumbnail_url = if let Some(public_id) = post.cloudinary_public_id.as_deref() {
+        state.cloudinary.generate_thumbnail_url(public_id, width, height)
+    } else {
+        // Firebase Storage images currently use their canonical download URL;
+        // Cloudinary-only transformations are retained for legacy posts.
+        post.image_url.clone().ok_or(AppError::PostNotFound)?
+    };
 
     Ok(Json(json!({
         "success": true,
@@ -831,9 +851,13 @@ pub async fn get_post_with_transform(
         return Err(AppError::invalid_data("This post has no image"));
     }
 
-    let cloudinary_service = &state.cloudinary;
-    let transformed_url = cloudinary_service
-        .generate_transformed_url(&post.cloudinary_public_id.unwrap(), &transformations);
+    let transformed_url = if let Some(public_id) = post.cloudinary_public_id.as_deref() {
+        state.cloudinary.generate_transformed_url(public_id, &transformations)
+    } else {
+        // Firebase Storage URLs are served unchanged until an image CDN
+        // transformation layer is configured for the bucket.
+        post.image_url.clone().ok_or(AppError::PostNotFound)?
+    };
 
     Ok(Json(json!({
         "success": true,
