@@ -28,10 +28,14 @@ impl FirebaseStorageService {
     /// Returns None when Storage credentials are not configured. This keeps
     /// existing API instances bootable while deployment secrets are prepared.
     pub fn from_env() -> Option<Self> {
-        let bucket = env::var("FIREBASE_STORAGE_BUCKET").ok()?;
-        let client_email = env::var("FIREBASE_STORAGE_CLIENT_EMAIL").ok()?;
-        let private_key = env::var("FIREBASE_STORAGE_PRIVATE_KEY").ok()?;
-        let project_id = env::var("FIREBASE_STORAGE_PROJECT_ID").ok()?;
+        // Reuse the Firebase service-account credentials already used by
+        // the application (FCM). Do not introduce a second credential set for
+        // profile uploads. This is the existing web/Flutter Firebase bucket.
+        let bucket = "funzy-d56d7.firebasestorage.app".to_string();
+        let client_email = env::var("FIREBASE_CLIENT_EMAIL").ok()?;
+        let private_key = env::var("FIREBASE_PRIVATE_KEY").ok()?;
+        let project_id = env::var("FIREBASE_PROJECT_ID")
+            .unwrap_or_else(|_| "clash-66865".to_string());
 
         if bucket.trim().is_empty()
             || client_email.trim().is_empty()
