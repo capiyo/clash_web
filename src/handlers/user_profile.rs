@@ -1,7 +1,8 @@
 use axum::{
-    extract::{State, Query, Path},
+    extract::{State, Query, Path, Extension},
     response::Json,
 };
+use axum_extra::extract::Multipart;
 use serde::Deserialize;
 use mongodb::bson::{doc, oid::ObjectId, DateTime as BsonDateTime};
 use chrono::Utc;
@@ -11,6 +12,7 @@ use validator::Validate;
 
 use crate::state::AppState;
 use crate::models::user_profile::{UserProfile, CreateUserProfile, UpdateBalanceRequest, UserQuery};
+use crate::models::user::Claims;
 use crate::errors::{AppError, Result};
 
 #[derive(Debug, Deserialize)]
@@ -153,6 +155,8 @@ pub async fn save_user_profile(
         country_fan: payload.country_fan,
         balance: payload.balance,
         number_of_bets: payload.number_of_bets,
+        avatar_url: existing_user.as_ref().and_then(|u| u.avatar_url.clone()),
+        avatar_public_id: existing_user.as_ref().and_then(|u| u.avatar_public_id.clone()),
         created_at: existing_user.as_ref()
             .map(|u| u.created_at)
             .unwrap_or(bson_now),
@@ -355,6 +359,8 @@ pub async fn create_user_profile(
         country_fan: payload.country_fan,
         balance: payload.balance,
         number_of_bets: payload.number_of_bets,
+        avatar_url: None,
+        avatar_public_id: None,
         created_at: BsonDateTime::from_chrono(now),
         updated_at: BsonDateTime::from_chrono(now),
     };
@@ -364,4 +370,102 @@ pub async fn create_user_profile(
 
     println!("✅ Successfully created user profile: {}", user_profile.username);
     Ok(Json(user_profile))
+}
+
+/// Upload the authenticated user's account avatar. The URL is persisted on the
+/// canonical user_profiles document so web, React Native and user-list reads
+/// all receive the same image.
+pub async fn upload_profile_avatar(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+    Extension(claims): Extension<Claims>,
+    mut multipart: Multipart,
+) -> Result<Json<serde_json::Value>> {
+    if user_id.is_empty() || claims.sub != user_id {
+        return Err(AppError::Unauthorized);
+    }
+
+    const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+    let mut image_bytes: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart.next_field().await? {
+        if field.name() != Some("image") {
+            continue;
+        }
+        let bytes = field.bytes().await?;
+        if bytes.is_empty() {
+            return Err(AppError::NoImageProvided);
+        }
+        if bytes.len() > MAX_IMAGE_BYTES {
+            return Err(AppError::ImageTooLarge);
+        }
+        image_bytes = Some(bytes.to_vec());
+        break;
+    }
+
+    let image_bytes = image_bytes.ok_or(AppError::NoImageProvided)?;
+    let image_kind = infer::get(&image_bytes).ok_or(AppError::InvalidImageFormat)?;
+    if !matches!(image_kind.mime_type(), "image/jpeg" | "image/png" | "image/webp") {
+        return Err(AppError::InvalidImageFormat);
+    }
+
+    let collection: Collection<UserProfile> = state.db.collection("user_profiles");
+    let filter = doc! { "user_id": &user_id };
+    let previous = collection.find_one(filter.clone()).await?;
+    let previous_public_id = previous.as_ref().and_then(|profile| profile.avatar_public_id.clone());
+
+    let upload_key = format!("avatar_{}", uuid::Uuid::new_v4().simple());
+    let (original_url, public_id) = state.cloudinary
+        .upload_image_with_preset(&image_bytes, "profile-avatars", Some(&upload_key))
+        .await?;
+
+    let avatar_url = state.cloudinary.generate_transformed_url(
+        &public_id,
+        "c_fill,w_256,h_256,g_face,q_auto,f_auto",
+    );
+
+    let now = BsonDateTime::from_chrono(Utc::now());
+    let mut update = doc! {
+        "$set": {
+            "avatar_url": &avatar_url,
+            "avatar_public_id": &public_id,
+            "updated_at": now,
+        },
+        "$setOnInsert": {
+            "user_id": &user_id,
+            "username": &claims.username,
+            "phone": &claims.phone,
+            "nickname": "",
+            "club_fan": "",
+            "country_fan": "",
+            "balance": 0.0,
+            "number_of_bets": 0,
+            "created_at": now,
+        }
+    };
+
+    // Avoid retaining an unused local URL; Cloudinary's transformed URL is the
+    // canonical one exposed to clients.
+    let _ = original_url;
+    if let Err(error) = collection.update_one(filter.clone(), update).upsert(true).await {
+        if let Err(cleanup_error) = state.cloudinary.delete_image(&public_id).await {
+            tracing::warn!("Could not clean up failed avatar upload {}: {}", public_id, cleanup_error);
+        }
+        return Err(error.into());
+    }
+
+    if let Some(old_public_id) = previous_public_id {
+        if old_public_id != public_id {
+            if let Err(error) = state.cloudinary.delete_image(&old_public_id).await {
+                tracing::warn!("Could not remove replaced profile avatar {}: {}", old_public_id, error);
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "avatar_url": avatar_url,
+        "avatarUrl": avatar_url,
+        "user_id": user_id,
+    })))
 }

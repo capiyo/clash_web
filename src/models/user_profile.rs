@@ -16,6 +16,12 @@ pub struct UserProfile {
     pub balance: f64,
     pub number_of_bets: i32,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+
+    #[serde(default, skip_serializing)]
+    pub avatar_public_id: Option<String>,
+
     pub created_at: BsonDateTime,
     pub updated_at: BsonDateTime,
 }
