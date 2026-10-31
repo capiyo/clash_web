@@ -19,7 +19,7 @@ use crate::models::posta::{Post, PostResponse, Comment, CommentResponse, PostTyp
 use crate::state::AppState;
 
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
-const ALLOWED_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "gif"];
+const ALLOWED_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "gif", "webp"];
 const DEFAULT_PAGE_SIZE: i64 = 20;
 const MAX_PAGE_SIZE: i64 = 100;
 
@@ -196,56 +196,54 @@ pub async fn create_post(
 
     let post = if let Some(image_data) = image_data {
         let file_extension = file_extension.unwrap();
-        let cloudinary_service = &state.cloudinary;
-        let public_id = format!("post_{}_{}", user_id, Uuid::new_v4());
-        let upload_path = format!("fanclash/posts/{}", user_id);
+        let image_kind = infer::get(&image_data).ok_or(AppError::InvalidImageFormat)?;
+        let content_type = image_kind.mime_type();
+        if !matches!(content_type, "image/jpeg" | "image/png" | "image/gif" | "image/webp") {
+            return Err(AppError::InvalidImageFormat);
+        }
 
-        let (image_url, cloudinary_public_id) = match cloudinary_service
-            .upload_image_with_preset(
-                &image_data,
-                &upload_path,
-                Some(&public_id),
+        let storage = state.firebase_storage.as_ref().ok_or_else(|| {
+            AppError::InternalServerError(
+                "Firebase Storage is not configured. Set FIREBASE_STORAGE_BUCKET, FIREBASE_STORAGE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY.".to_string()
             )
+        })?;
+        let storage_path = format!(
+            "posts/{}/{}.{}",
+            user_id,
+            Uuid::new_v4(),
+            file_extension
+        );
+        let (image_url, storage_path) = storage
+            .upload(&storage_path, &image_data, content_type)
             .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                cloudinary_service
-                    .upload_image_signed(
-                        &image_data,
-                        &upload_path,
-                        Some(&public_id),
-                    )
-                    .await
-                    .map_err(|e| {
-                        AppError::invalid_data(format!("Both upload methods failed. Last error: {}", e))
-                    })?
-            }
-        };
+            .map_err(|error| AppError::InternalServerError(format!("Firebase Storage upload failed: {error}")))?;
 
-        match caption {
+        let mut post = match caption {
             Some(caption_text) => {
-                log_info!("[{}] Creating post with both image and caption", request_id);
+                log_info!("[{}] Creating Firebase Storage post with caption", request_id);
                 Post::new_text_image_post(
                     user_id,
                     user_name,
                     caption_text,
                     image_url,
-                    cloudinary_public_id,
+                    String::new(),
                     file_extension,
                 )
             }
             None => {
-                log_info!("[{}] Creating image-only post", request_id);
+                log_info!("[{}] Creating Firebase Storage image-only post", request_id);
                 Post::new_image_post(
                     user_id,
                     user_name,
                     image_url,
-                    cloudinary_public_id,
+                    String::new(),
                     file_extension,
                 )
             }
-        }
+        };
+        post.cloudinary_public_id = None;
+        post.firebase_storage_path = Some(storage_path);
+        post
     } else {
         log_info!("[{}] Creating text-only post", request_id);
         Post::new_text_post(
