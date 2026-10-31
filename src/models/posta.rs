@@ -18,8 +18,6 @@ pub struct Post {
     // Make image fields optional for text-only posts
     pub image_url: Option<String>,
     pub cloudinary_public_id: Option<String>,
-    #[serde(default)]
-    pub firebase_storage_path: Option<String>,
     pub image_format: Option<String>,
 
     pub likes_count: i32,
@@ -65,7 +63,6 @@ impl Post {
             caption: Some(caption),
             image_url: None,
             cloudinary_public_id: None,
-            firebase_storage_path: None,
             image_format: None,
             likes_count: 0,
             comments_count: 0,
@@ -95,7 +92,6 @@ impl Post {
             caption: None,
             image_url: Some(image_url),
             cloudinary_public_id: Some(cloudinary_public_id),
-            firebase_storage_path: None,
             image_format: Some(image_format),
             likes_count: 0,
             comments_count: 0,
@@ -126,7 +122,6 @@ impl Post {
             caption: Some(caption),
             image_url: Some(image_url),
             cloudinary_public_id: Some(cloudinary_public_id),
-            firebase_storage_path: None,
             image_format: Some(image_format),
             likes_count: 0,
             comments_count: 0,
@@ -221,7 +216,6 @@ pub struct PostResponse {
     pub caption: Option<String>,
     pub image_url: Option<String>,
     pub cloudinary_public_id: Option<String>,
-    pub firebase_storage_path: Option<String>,
     pub image_format: Option<String>,
     pub post_type: String, // "text", "image", or "text_and_image"
 
@@ -252,7 +246,6 @@ impl From<Post> for PostResponse {
             caption: post.caption,
             image_url: post.image_url,
             cloudinary_public_id: post.cloudinary_public_id,
-            firebase_storage_path: post.firebase_storage_path,
             image_format: post.image_format,
             post_type: post_type_str,
             likes_count: post.likes_count,
